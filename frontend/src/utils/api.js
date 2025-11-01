@@ -51,20 +51,35 @@ const checkApiHealth = async (url, retries = 3) => {
 
 // Auto-detect API URL
 const detectApiUrl = async () => {
-  // Try common Railway URL patterns
-  const possibleUrls = [
-    import.meta.env.VITE_API_URL,
-    'https://filebackend-production.up.railway.app',
-    'https://filebackend-production-b095.up.railway.app',
-  ].filter(Boolean)
-  
-  for (const url of possibleUrls) {
-    const health = await checkApiHealth(url, 2)
+  // Try environment variable first
+  if (import.meta.env.VITE_API_URL) {
+    const health = await checkApiHealth(import.meta.env.VITE_API_URL, 2)
     if (health.success) {
-      return url
+      return import.meta.env.VITE_API_URL
     }
   }
   
+  // Try common Railway URL patterns (these may change, so set VITE_API_URL in Vercel)
+  const possibleUrls = [
+    'https://filebackend-production.up.railway.app',
+    'https://filebackend-production-b095.up.railway.app',
+    // Add more patterns if you have other Railway URLs
+  ].filter(Boolean)
+  
+  for (const url of possibleUrls) {
+    try {
+      const health = await checkApiHealth(url, 2)
+      if (health.success) {
+        console.log('Auto-detected API URL:', url)
+        return url
+      }
+    } catch (error) {
+      // Continue to next URL
+      continue
+    }
+  }
+  
+  console.warn('Could not auto-detect API URL. Please set VITE_API_URL environment variable.')
   return null
 }
 
@@ -90,6 +105,67 @@ export const getApiUrlWithFallback = async () => {
   cachedApiUrl = apiUrl
   apiUrlChecked = true
   return apiUrl
+}
+
+// Wake up server (useful for Railway sleeping services)
+export const wakeUpServer = async (apiUrl = null) => {
+  if (!apiUrl) {
+    apiUrl = await getApiUrlWithFallback()
+  }
+  
+  // Try multiple times with increasing delays (Railway services can take time to wake up)
+  const maxRetries = 3
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      // Use shorter timeout on first attempt, longer on later attempts
+      const timeout = attempt === 1 ? 5000 : 15000
+      
+      const response = await axios.get(`${apiUrl}/api/health`, { 
+        timeout,
+        validateStatus: (status) => status < 500 // Accept 4xx but not 5xx
+      })
+      
+      if (response.data && response.data.status === 'ok') {
+        console.log('Server is awake and responding')
+        return true
+      }
+    } catch (error) {
+      const isLastAttempt = attempt === maxRetries
+      
+      if (error.code === 'ERR_NAME_NOT_RESOLVED') {
+        // DNS error - service is definitely sleeping or down
+        if (isLastAttempt) {
+          console.warn(`Server wake-up failed after ${maxRetries} attempts:`, error.message)
+          return false
+        }
+        // Wait longer before retrying
+        await new Promise(resolve => setTimeout(resolve, 2000 * attempt))
+        continue
+      } else if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+        // Timeout - service might be waking up
+        if (isLastAttempt) {
+          console.warn(`Server wake-up timed out after ${maxRetries} attempts`)
+          return false
+        }
+        // Wait before retrying
+        await new Promise(resolve => setTimeout(resolve, 2000 * attempt))
+        continue
+      } else {
+        // Other error - server might be responding but with an error
+        console.warn(`Server wake-up attempt ${attempt} failed:`, error.message)
+        if (isLastAttempt) {
+          return false
+        }
+      }
+    }
+    
+    // Wait between attempts (except on last attempt)
+    if (attempt < maxRetries) {
+      await new Promise(resolve => setTimeout(resolve, 2000 * attempt))
+    }
+  }
+  
+  return false
 }
 
 // Create axios instance with retry logic
@@ -131,25 +207,40 @@ const createApiInstance = async () => {
       ) {
         originalRequest._retry = true
         
-        // Try to refresh API URL
-        console.warn('Network error detected, refreshing API URL...')
-        cachedApiUrl = null
-        apiUrlChecked = false
+        // Try to wake up the server first
+        console.warn('Network error detected, attempting to wake up server...')
         
         try {
-          const newApiUrl = await getApiUrlWithFallback()
-          originalRequest.baseURL = newApiUrl
-          originalRequest.url = originalRequest.url.replace(
-            originalRequest.baseURL || '',
-            newApiUrl
-          )
+          const apiUrl = await getApiUrlWithFallback()
           
-          // Retry the request
-          return instance(originalRequest)
+          // Try to wake up the server
+          const woke = await wakeUpServer(apiUrl)
+          
+          if (woke) {
+            console.log('Server awakened, retrying request...')
+            // Retry the original request
+            originalRequest.baseURL = apiUrl
+            return instance(originalRequest)
+          }
+          
+          // If wake-up failed, try refreshing API URL
+          console.warn('Wake-up failed, refreshing API URL...')
+          cachedApiUrl = null
+          apiUrlChecked = false
+          
+          const newApiUrl = await getApiUrlWithFallback()
+          if (newApiUrl !== apiUrl) {
+            originalRequest.baseURL = newApiUrl
+            originalRequest.url = originalRequest.url.replace(
+              originalRequest.baseURL || '',
+              newApiUrl
+            )
+            return instance(originalRequest)
+          }
         } catch (retryError) {
           return Promise.reject({
             ...retryError,
-            message: 'Unable to connect to server. Please check your connection and try again.',
+            message: 'Unable to connect to server. The server may be sleeping or unavailable. Please try again in a moment.',
             isRetryError: true
           })
         }
@@ -180,18 +271,6 @@ export const getApiInstance = async () => {
     apiInstance = await createApiInstance()
   }
   return apiInstance
-}
-
-// Wake up server (useful for Railway sleeping services)
-export const wakeUpServer = async () => {
-  const apiUrl = await getApiUrlWithFallback()
-  try {
-    await axios.get(`${apiUrl}/api/health`, { timeout: 10000 })
-    return true
-  } catch (error) {
-    console.warn('Server wake-up failed:', error.message)
-    return false
-  }
 }
 
 // API methods
