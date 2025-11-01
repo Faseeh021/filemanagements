@@ -1,6 +1,6 @@
 import React from 'react'
 import { Link } from 'react-router-dom'
-import { BarChart3, Upload, CheckCircle, FileText, Settings, HelpCircle, Star, User, LogOut } from 'lucide-react'
+import { BarChart3, Upload, CheckCircle, FileText, Settings, HelpCircle, User, LogOut } from 'lucide-react'
 import './Sidebar.css'
 
 const Sidebar = ({ isOpen, currentPath }) => {
@@ -20,8 +20,8 @@ const Sidebar = ({ isOpen, currentPath }) => {
     <aside className={`sidebar ${isOpen ? 'open' : 'closed'}`}>
       <div className="sidebar-header">
         <div className="logo">
-          <Star className="logo-icon" size={20} />
-          <span className="logo-text">Logo Here</span>
+          <img src="/logo.svg" alt="Logo" className="logo-icon" />
+          <span className="logo-text">File Management</span>
         </div>
       </div>
 
