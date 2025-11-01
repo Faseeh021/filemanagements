@@ -54,9 +54,18 @@ router.get('/', async (req, res) => {
 })
 
 // Generate and download PDF report (must be before /:id route)
+// Using explicit route pattern to ensure it matches correctly
 router.get('/:id/download', async (req, res) => {
+  console.log(`[DOWNLOAD] Route matched! ID: ${req.params.id}, Path: ${req.path}, URL: ${req.originalUrl}, Method: ${req.method}`)
   try {
     const { id } = req.params
+    const parsedId = parseInt(id)
+    
+    if (isNaN(parsedId)) {
+      return res.status(400).json({ success: false, message: 'Invalid result ID' })
+    }
+    
+    console.log(`[DOWNLOAD] Processing download for result ID: ${parsedId}`)
 
     // Fetch result data using raw SQL
     const resultQuery = await client`
@@ -69,7 +78,7 @@ router.get('/:id/download', async (req, res) => {
         u.uploaded_at
       FROM results r
       LEFT JOIN uploads u ON r.upload_id = u.id
-      WHERE r.id = ${parseInt(id)}
+      WHERE r.id = ${parsedId}
       LIMIT 1
     `
 
@@ -90,27 +99,74 @@ router.get('/:id/download', async (req, res) => {
     // Check if file exists
     const storedPath = resultDataFormatted.file_path
     const fileType = resultDataFormatted.file_type || ''
-    const originalName = resultDataFormatted.original_filename || `file_${id}`
+    const originalName = resultDataFormatted.original_filename || `file_${parsedId}`
     
-    // Resolve file path - always use uploads directory relative to current app
-    const uploadsDir = join(__dirname, '..', 'uploads')
+    // Resolve file path - handle both absolute paths and relative filenames
+    // Check multiple possible locations for uploaded files
+    const backendUploadsDir = join(__dirname, '..', 'uploads') // backend/uploads
+    const rootUploadsDir = join(__dirname, '..', '..', 'uploads') // root/uploads (where files actually are)
     
-    // Ensure uploads directory exists
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true })
+    // Ensure uploads directories exist
+    if (!fs.existsSync(backendUploadsDir)) {
+      fs.mkdirSync(backendUploadsDir, { recursive: true })
+    }
+    if (!fs.existsSync(rootUploadsDir)) {
+      fs.mkdirSync(rootUploadsDir, { recursive: true })
     }
     
-    // Extract just the filename from the stored path (in case it's a full path)
-    const storedFilename = storedPath ? storedPath.split(/[/\\]/).pop() : null
-    const filePath = storedFilename ? join(uploadsDir, storedFilename) : null
+    let filePath = null
     
-    if (!filePath || !storedFilename || !fs.existsSync(filePath)) {
+    // First, check if the stored path is an absolute path that exists
+    if (storedPath && fs.existsSync(storedPath)) {
+      filePath = storedPath
+      console.log(`[DOWNLOAD] Using stored absolute path: ${filePath}`)
+    } else {
+      // Extract just the filename from the stored path (in case it's a full path)
+      const storedFilename = storedPath ? storedPath.split(/[/\\]/).pop() : null
+      if (storedFilename) {
+        // Try multiple locations:
+        // 1. Root uploads directory (where files actually are)
+        const rootPath = join(rootUploadsDir, storedFilename)
+        if (fs.existsSync(rootPath)) {
+          filePath = rootPath
+          console.log(`[DOWNLOAD] Found in root uploads: ${filePath}`)
+        }
+        // 2. Backend uploads directory
+        else {
+          const backendPath = join(backendUploadsDir, storedFilename)
+          if (fs.existsSync(backendPath)) {
+            filePath = backendPath
+            console.log(`[DOWNLOAD] Found in backend uploads: ${filePath}`)
+          }
+        }
+        
+        // 3. If storedPath is just a filename, try that too
+        if (!filePath && storedPath && !storedPath.includes('/') && !storedPath.includes('\\')) {
+          const directRootPath = join(rootUploadsDir, storedPath)
+          if (fs.existsSync(directRootPath)) {
+            filePath = directRootPath
+            console.log(`[DOWNLOAD] Found using direct root path: ${filePath}`)
+          } else {
+            const directBackendPath = join(backendUploadsDir, storedPath)
+            if (fs.existsSync(directBackendPath)) {
+              filePath = directBackendPath
+              console.log(`[DOWNLOAD] Found using direct backend path: ${filePath}`)
+            }
+          }
+        }
+      }
+    }
+    
+    if (!filePath || !fs.existsSync(filePath)) {
       console.error('File not found:', {
         storedPath: storedPath,
-        storedFilename: storedFilename,
         filePath: filePath,
-        uploadsDir: uploadsDir,
-        exists: filePath ? fs.existsSync(filePath) : false
+        backendUploadsDir: backendUploadsDir,
+        rootUploadsDir: rootUploadsDir,
+        backendUploadsExists: fs.existsSync(backendUploadsDir),
+        rootUploadsExists: fs.existsSync(rootUploadsDir),
+        filesInBackendUploads: fs.existsSync(backendUploadsDir) ? fs.readdirSync(backendUploadsDir).slice(0, 5) : 'N/A',
+        filesInRootUploads: fs.existsSync(rootUploadsDir) ? fs.readdirSync(rootUploadsDir).slice(0, 5) : 'N/A'
       })
       return res.status(404).json({ 
         success: false, 
