@@ -106,6 +106,15 @@ const Upload = () => {
     setErrorMessage('')
 
     try {
+      // Pre-flight health check to wake up Railway service if sleeping
+      try {
+        await api.healthCheck()
+        console.log('Server health check passed')
+      } catch (healthError) {
+        console.warn('Health check warning (continuing anyway):', healthError)
+        // Continue anyway - might just be slow to wake up
+      }
+
       // Upload files one by one (or modify backend to accept multiple files)
       let totalProgress = 0
       const totalFiles = files.length
@@ -137,9 +146,15 @@ const Upload = () => {
       }, 1500)
     } catch (error) {
       console.error('Upload error:', error)
-      const errorMsg = error.userMessage || error.message || 'Unknown error occurred'
+      let errorMsg = error.userMessage || error.message || 'Unknown error occurred'
+      
+      // Handle timeout errors more gracefully
+      if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+        errorMsg = 'Upload timeout: The server took too long to respond. This may happen if the Railway service is waking up from sleep. Please wait a moment and try again.'
+      }
+      
       setErrorMessage(errorMsg)
-      alert(`Upload failed: ${errorMsg}. Please try again.`)
+      alert(`Upload failed: ${errorMsg}`)
       setUploading(false)
     }
   }
